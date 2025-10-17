@@ -1,0 +1,62 @@
+
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generatore di Verifiche Intelligenti - Prof. Bolzonati</title>
+    <!-- Caricamento di Tailwind CSS per uno stile moderno e responsive -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Inter -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f7f7f7; }
+        .card { background-color: white; border-radius: 1rem; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+        .btn-primary { background-color: #4f46e5; color: white; transition: all 0.2s; }
+        .btn-primary:hover { background-color: #4338ca; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15); }
+        .animate-pulse-slow { animation: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        .loading-bar { height: 4px; background-color: #4f46e5; width: 0%; transition: width 0.3s; }
+
+        /* Stili per la stampa/PDF */
+        @media print {
+            body * { visibility: hidden; }
+            #printable-area, #printable-area * { visibility: visible; }
+            #printable-area { position: absolute; left: 0; top: 0; width: 100%; padding: 20px; box-shadow: none; }
+            .no-print { display: none !important; }
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center p-4 sm:p-8">
+
+    <header class="w-full max-w-6xl mb-8 flex flex-col sm:flex-row justify-between items-center no-print">
+        <h1 class="text-3xl font-extrabold text-gray-800 flex items-center mb-4 sm:mb-0">
+            <svg class="w-8 h-8 text-indigo-600 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5s3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18s-3.332.477-4.5 1.253"></path></svg>
+            Smart Quiz Generator
+        </h1>
+        <div id="auth-status" class="text-sm text-gray-600">
+            <span class="font-medium text-indigo-700">Docente: Prof. Bolzonati Giuseppe</span>
+            <div id="user-info" class="text-xs mt-1">Caricamento utente...</div>
+        </div>
+    </header>
+
+    <main id="app-container" class="w-full max-w-6xl">
+        <!-- Contenuto dinamico caricato da app.js -->
+        <div class="card p-6 sm:p-10 text-center text-gray-500">
+            Caricamento dell'applicazione...
+        </div>
+    </main>
+
+    <!-- Modale per Messaggi/Errori (Sostituisce alert/confirm) -->
+    <div id="modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 hidden items-center justify-center p-4 z-50">
+        <div class="card p-6 w-full max-w-md transform transition-all">
+            <h3 id="modal-title" class="text-xl font-bold text-gray-800 mb-4"></h3>
+            <p id="modal-message" class="text-gray-600 mb-6"></p>
+            <button onclick="document.getElementById('modal').classList.add('hidden'); document.getElementById('modal').classList.remove('flex');"
+                class="w-full btn-primary px-4 py-2 rounded-lg font-semibold">Chiudi</button>
+        </div>
+    </div>
+
+    <!-- Caricamento della configurazione Firebase e della logica principale -->
+    <script type="module" src="src/firebase-config.js"></script>
+    <script type="module" src="src/app.js"></script>
+</body>
+</html>
