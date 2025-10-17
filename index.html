@@ -1,0 +1,1215 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Quiz Generator Avanzato</title>
+    <!-- Caricamento di Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configurazione Font Inter -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* Sfondo grigio chiaro */
+        }
+        /* Stili per il contenitore principale */
+        .app-shell {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem 1rem;
+        }
+        /* Stile pulsante primario */
+        .btn-primary {
+            background-color: #4f46e5; /* Indigo-600 */
+            color: white;
+            transition: all 0.2s;
+        }
+        .btn-primary:hover {
+            background-color: #4338ca; /* Indigo-700 */
+        }
+        /* Stili per la barra di caricamento */
+        .loading-bar {
+            width: 0%;
+            height: 100%;
+            transition: width 0.5s ease-in-out;
+            border-radius: 9999px; 
+        }
+        /* Stili per la stampa/PDF (Nasconde elementi non necessari e ottimizza layout) */
+        @media print {
+            .no-print {
+                display: none !important;
+            }
+            .app-shell {
+                max-width: 100%;
+                padding: 0;
+            }
+            body {
+                background-color: white;
+            }
+            /* Intestazione ufficiale per PDF */
+            .official-header {
+                display: block !important;
+                border-bottom: 3px double #000; /* Stile più ufficiale */
+                padding-bottom: 1rem;
+                margin-bottom: 2rem;
+            }
+            /* Forza margini e sfondo bianco per tutto il contenuto */
+            #printable-area, .card, body {
+                box-shadow: none !important;
+                border-radius: 0 !important;
+                padding: 0 !important;
+                margin: 0 !important;
+                background-color: white !important;
+            }
+            /* Aumenta lo spazio per la firma */
+            .signature-area {
+                min-height: 150px;
+            }
+            /* Nasconde gli input radio per la stampa della verifica */
+            .quiz-content input[type="radio"], .quiz-content input[type="text"], .quiz-content textarea {
+                border: none;
+                background-color: #f7f7f7;
+                padding: 0.5rem;
+            }
+            .quiz-content textarea {
+                border-left: 3px solid #ccc;
+            }
+        }
+        /* Stile base per le card (migliorato) */
+        .card {
+            background-color: white;
+            border-radius: 1rem;
+            box-shadow: 0 10px 20px -5px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="min-h-screen bg-gray-100">
+        <!-- Header (Visibile solo al docente per navigazione) -->
+        <header class="bg-white shadow no-print">
+            <div class="app-shell flex justify-between items-center py-4">
+                <h1 class="text-2xl font-extrabold text-indigo-600 cursor-pointer" onclick="navigate('dashboard')">Smart Quiz Generator</h1>
+                <div id="user-info" class="text-sm text-gray-500">In attesa autenticazione...</div>
+            </div>
+        </header>
+
+        <!-- Contenitore Principale dell'Applicazione -->
+        <main class="app-shell">
+            <div id="app-container">
+                <!-- Il contenuto verrà iniettato qui -->
+                <div class="text-center p-10 text-gray-500">Caricamento dell'applicazione in corso...</div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modale di Messaggio (per sostituire alert/confirm) -->
+    <div id="modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 transition-opacity">
+        <div class="bg-white rounded-xl p-6 max-w-sm mx-auto shadow-2xl">
+            <h3 id="modal-title" class="text-xl font-bold text-gray-800 mb-4">Messaggio</h3>
+            <p id="modal-message" class="text-gray-600 mb-6">Contenuto del messaggio.</p>
+            <div class="flex justify-end">
+                <button onclick="document.getElementById('modal').classList.add('hidden'); document.getElementById('modal').classList.remove('flex');" class="btn-primary px-4 py-2 rounded-lg font-semibold">
+                    OK
+                </button>
+            </div>
+        </div>
+    </div>
+
+
+    <script type="module">
+        // Importa i moduli Firebase necessari
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            getDoc, 
+            setDoc, 
+            onSnapshot, 
+            collection, 
+            query, 
+            where, 
+            addDoc, 
+            serverTimestamp 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- CONFIGURAZIONE GLOBALE (FORNITA DALL'AMBIENTE) ---
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        let app;
+        let db;
+        let auth;
+        let userId = null;
+        let currentRoute = 'login';
+        let verificationsData = []; 
+        const API_KEY = ""; // L'API Key di Gemini è gestita dall'ambiente di esecuzione
+
+        // Elenco delle classi definite dall'utente
+        const ALL_CLASSES = ['prima B', 'seconda I', 'seconda L', 'terza I', 'terza L', 'quinta I', 'quinta L'];
+
+
+        // --- FUNZIONI UTILITY GLOBALI ---
+
+        function showModal(title, message) {
+            document.getElementById('modal-title').textContent = title;
+            document.getElementById('modal-message').textContent = message;
+            document.getElementById('modal').classList.add('flex');
+            document.getElementById('modal').classList.remove('hidden');
+        }
+
+        // Funzione per leggere i parametri dalla porzione hash dell'URL
+        function getRouteParams() {
+            const hash = window.location.hash.substring(1); // Rimuove il '#' iniziale
+            return new URLSearchParams(hash);
+        }
+
+        function navigate(newRoute, params = {}) {
+            currentRoute = newRoute;
+            
+            // Usiamo URLSearchParams per costruire i parametri del nuovo hash
+            const newParams = new URLSearchParams();
+            newParams.set('page', newRoute);
+
+            // Pulisce i parametri non necessari per la rotta specifica
+            if (newRoute !== 'results' && newRoute !== 'quiz' && newRoute !== 'student-login') {
+                newParams.delete('vId');
+            }
+            if (newRoute !== 'dashboard') {
+                newParams.delete('links');
+            }
+
+            // Aggiunge i nuovi parametri
+            Object.keys(params).forEach(key => {
+                if (params[key] !== null) {
+                    newParams.set(key, params[key]);
+                }
+            });
+
+            // Usa l'hash (frammento) per il routing per evitare errori SecurityError in ambienti blob:
+            window.location.hash = '#' + newParams.toString();
+            renderApp();
+        }
+
+        window.addEventListener('hashchange', () => {
+            const urlParams = getRouteParams();
+            const newPage = urlParams.get('page') || 'dashboard';
+            if (currentRoute !== newPage) {
+                currentRoute = newPage;
+                renderApp();
+            }
+        });
+
+
+        function copyToClipboard(elementId) {
+            const copyText = document.getElementById(elementId);
+            copyText.select();
+            copyText.setSelectionRange(0, 99999);
+            try {
+                // Utilizza document.execCommand('copy') come fallback robusto
+                document.execCommand('copy'); 
+                showModal("Copiato!", `Il link è stato copiato negli appunti: ${copyText.value}`);
+            } catch (err) {
+                console.error('Copy command failed:', err);
+                showModal("Errore Copia", "Impossibile copiare il link automaticamente. Copia manualmente.");
+            }
+        }
+
+        window.copyToClipboard = copyToClipboard;
+        window.navigate = navigate;
+
+
+        // --- GESTIONE DEI DATI FIRESTORE ---
+
+        const getTeacherQuizCollection = (uid) => collection(db, `artifacts/${APP_ID}/users/${uid}/quizzes`);
+        const getPublicVerificationCollection = () => collection(db, `artifacts/${APP_ID}/public/data/verifications`);
+        const getPublicResultsCollection = () => collection(db, `artifacts/${APP_ID}/public/data/results`);
+
+        function setupFirestoreListeners() {
+            if (!db || !userId) return;
+
+            // Ascolto per le Verifiche e Risultati (dati pubblici per la dashboard del docente)
+            // Nota: onSnapshot sulla collezione pubblica, ma filtriamo in memoria per creatorId
+            // Poiché non possiamo usare query.where su collezioni pubbliche senza autenticazione
+            // Per motivi di sicurezza/regole Firestore.
+            onSnapshot(getPublicVerificationCollection(), async (snapshot) => {
+                const newVerificationsData = [];
+                const verificationPromises = [];
+
+                // Ottiene solo le verifiche create da questo utente
+                const userVerificationDocs = snapshot.docs.filter(docSnap => docSnap.data().creatorId === userId);
+
+                userVerificationDocs.forEach(docSnap => {
+                    const verification = { id: docSnap.id, ...docSnap.data() };
+                    
+                    const resultDocRef = doc(getPublicResultsCollection(), verification.id);
+                    verificationPromises.push(getDoc(resultDocRef).then(resultSnap => {
+                        verification.result = resultSnap.exists() ? resultSnap.data() : null;
+                        newVerificationsData.push(verification);
+                    }).catch(e => {
+                        console.error("Errore durante il fetch del risultato:", e);
+                        newVerificationsData.push(verification);
+                    }));
+                });
+
+                await Promise.all(verificationPromises);
+                // Ordina in memoria per data di creazione (dal più recente)
+                verificationsData = newVerificationsData.sort((a, b) => {
+                    const dateA = b.creationDate?.seconds || 0;
+                    const dateB = a.creationDate?.seconds || 0;
+                    return dateA - dateB;
+                });
+
+                if (currentRoute === 'dashboard') {
+                    renderDashboard();
+                }
+            });
+
+            // Inizializza il routing
+            const urlParams = getRouteParams();
+            const page = urlParams.get('page');
+            const verificationId = urlParams.get('vId');
+            
+            let routeToRender;
+            if (verificationId) {
+                routeToRender = page === 'results' ? 'results' : (page === 'quiz' ? 'quiz' : 'student-login');
+            } else {
+                routeToRender = page || 'dashboard';
+            }
+            
+            currentRoute = routeToRender;
+            renderApp(); // Esegui il render iniziale
+        }
+
+        // --- GESTIONE AUTENTICAZIONE e AVVIO APP ---
+
+        function initializeAppAndAuth() {
+            if (firebaseConfig) {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('user-info').textContent = `ID Docente: ${userId.substring(0, 8)}...`;
+                        setupFirestoreListeners();
+                    } else {
+                        try {
+                           if (!auth.currentUser) {
+                               if (initialAuthToken) {
+                                    await signInWithCustomToken(auth, initialAuthToken);
+                                } else {
+                                    await signInAnonymously(auth);
+                                }
+                           }
+                        } catch (error) {
+                            console.error("Errore nel tentativo di sign-in:", error);
+                            document.getElementById('user-info').textContent = `Errore Autenticazione`;
+                        }
+                    }
+                });
+                
+                if (!auth.currentUser) {
+                    if (initialAuthToken) {
+                         signInWithCustomToken(auth, initialAuthToken).catch(e => console.error("Token initial failed:", e));
+                    } else {
+                         signInAnonymously(auth).catch(e => console.error("Anon sign in failed:", e));
+                    }
+                }
+
+            } else {
+                console.error("Errore: configurazione Firebase non trovata.");
+                document.getElementById('app-container').innerHTML = '<div class="text-center p-10 text-red-600">Errore critico: Configurazione Firebase mancante.</div>';
+            }
+        }
+
+
+        // --- LOGICA DI GENERAZIONE QUIZ (GEMINI API) ---
+
+        async function generateQuizContent(topic, complexity) {
+            const systemPrompt = `Sei un esperto creatore di verifiche di Informatica/Tecnologia. Genera un JSON per una verifica dettagliata su "${topic}". La verifica deve essere molto complessa, articolata e contenere un mix di 15-20 domande di tipo risposta multipla, aperta e pratiche/testuali. Deve essere completabile in 60-90 minuti.
+            
+            Includi link a immagini placeholder (es: https://placehold.co/400x250/F0F4FF/4F46E5?text=Diagramma) per gli esercizi che richiedono diagrammi o figure complesse. Assegna punti per ogni domanda (Max totale 100).
+            
+            DEVI usare questo schema JSON. L'italiano DEVE essere l'unica lingua usata nel testo.
+            
+            Schema per la Rubrica: La rubrica deve convertire il punteggio totale (su 100) in un voto in decimi con un giudizio.
+            Esempio: {"0-50": "Insufficiente (4)", "51-65": "Sufficiente (6)", "66-75": "Discreto (7)", "76-85": "Buono (8)", "86-95": "Ottimo (9)", "96-100": "Eccellente (10)"}.
+            `;
+
+            const userQuery = `Crea una verifica di ${complexity} complessità sul tema "${topic}". Genera la Rubrica e l'array di domande completo. Ogni domanda deve essere complessa e contenere un campo 'image' con un link a un placeholder di immagine se la domanda lo richiede (diagrammi, schemi, ecc.).`;
+
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY}`;
+            
+            const quizSchema = {
+                type: "OBJECT",
+                properties: {
+                    rubric: { type: "OBJECT" },
+                    questions: {
+                        type: "ARRAY",
+                        items: {
+                            type: "OBJECT",
+                            properties: {
+                                id: { type: "NUMBER" },
+                                text: { type: "STRING" },
+                                type: { type: "STRING", enum: ["multiple-choice", "open", "closed", "practical"] },
+                                points: { type: "NUMBER" },
+                                correctAnswer: { type: "STRING", description: "Risposta corretta o risposta attesa/guida per la correzione." },
+                                options: { type: "ARRAY", items: { type: "STRING" } },
+                                image: { type: "STRING", description: "Link a placeholder immagine se necessario (es: https://placehold.co/400x250/F0F4FF/4F46E5?text=Diagramma)." }
+                            },
+                            required: ["id", "text", "type", "points", "correctAnswer"]
+                        }
+                    }
+                },
+                required: ["rubric", "questions"]
+            };
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: quizSchema
+                }
+            };
+
+            let response;
+            try {
+                const MAX_RETRIES = 3;
+                let attempt = 0;
+                while (attempt < MAX_RETRIES) {
+                    response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) break;
+
+                    attempt++;
+                    if (attempt < MAX_RETRIES) {
+                        const delay = Math.pow(2, attempt) * 1000;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                }
+
+                if (!response || !response.ok) {
+                    throw new Error(`API error: ${response.status} ${response.statusText}`);
+                }
+
+                const result = await response.json();
+                const jsonText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                if (!jsonText) {
+                    throw new Error("Risposta API non valida o vuota.");
+                }
+
+                const cleanJsonText = jsonText.replace(/```json|```/g, '').trim();
+                
+                const quizData = JSON.parse(cleanJsonText);
+                quizData.questions = quizData.questions.map((q, idx) => ({ ...q, id: idx + 1 }));
+
+                return quizData;
+            } catch (error) {
+                console.error("Errore fetch/parsing API:", error);
+                throw new Error("Errore durante la comunicazione con l'AI o nel parsing della risposta.");
+            }
+        }
+
+        // --- LOGICA DI CREAZIONE QUIZ E SALVATAGGIO SU DB ---
+
+        async function createVerifications(topic, studentsData, complexity) {
+            const container = document.getElementById('quiz-generator');
+            const loadingArea = container.querySelector('#loading-area');
+            const loadingBar = container.querySelector('.loading-bar');
+            const originalButtonHTML = container.querySelector('#generate-button').innerHTML;
+            
+            // Disabilita il pulsante
+            const generateButton = container.querySelector('#generate-button');
+            generateButton.disabled = true;
+            generateButton.innerHTML = `<svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Generazione in corso...`;
+
+
+            // 1. Generazione del Contenuto Base del Quiz
+            loadingBar.style.width = '10%';
+            loadingArea.querySelector('#status-message').textContent = "Generazione del contenuto base della verifica tramite AI...";
+            let quizContent;
+            try {
+                quizContent = await generateQuizContent(topic, complexity);
+            } catch (error) {
+                console.error("Errore generazione Quiz:", error);
+                showModal("Errore Generazione AI", `Impossibile generare il contenuto del quiz. Dettagli: ${error.message}. Riprova.`);
+                loadingBar.style.width = '0%';
+                generateButton.disabled = false;
+                generateButton.innerHTML = originalButtonHTML;
+                return;
+            }
+
+            // 2. Creazione del Record Base nel DB (Quiz Generale) - Per riferimento del docente
+            loadingBar.style.width = '30%';
+            loadingArea.querySelector('#status-message').textContent = "Contenuto generato. Salvataggio configurazione quiz base...";
+            const quizRef = await addDoc(getTeacherQuizCollection(userId), {
+                topic,
+                totalStudents: studentsData.length,
+                classes: [...new Set(studentsData.map(s => s.class))], // Classi uniche
+                complexity,
+                creationDate: serverTimestamp(),
+                baseQuestions: quizContent.questions, 
+                rubric: quizContent.rubric
+            });
+
+            // 3. Creazione delle Verifiche Personalizzate per ogni Alunno
+            const baseQuestions = quizContent.questions;
+            const rubric = quizContent.rubric;
+            const verificationLinks = [];
+
+            for (let i = 0; i < studentsData.length; i++) {
+                loadingBar.style.width = `${30 + (i / studentsData.length) * 60}%`;
+                loadingArea.querySelector('#status-message').textContent = `Creazione verifica per ${studentsData[i].name} (${studentsData[i].class})...`;
+
+                const studentInfo = studentsData[i];
+                // Genera una password casuale di 6 caratteri alfanumerici
+                const password = Math.random().toString(36).substring(2, 8).toUpperCase(); 
+
+                // Shuffle delle domande per differenziare la verifica
+                const personalizedQuestions = [...baseQuestions].sort(() => Math.random() - 0.5);
+
+                const verificationDoc = {
+                    quizId: quizRef.id,
+                    topic: topic, 
+                    assignedClass: studentInfo.class,
+                    assignedCurriculum: studentInfo.curriculum, 
+                    studentName: studentInfo.name, // Nome pre-assegnato
+                    password: password,
+                    status: 'pending',
+                    questions: personalizedQuestions,
+                    rubric: rubric,
+                    creationDate: serverTimestamp(),
+                    creatorId: userId 
+                };
+
+                const verifRef = await addDoc(getPublicVerificationCollection(), verificationDoc);
+                const verificationId = verifRef.id;
+
+                // URL base per il login dello studente
+                const verificationLink = `${window.location.origin}${window.location.pathname}#page=student-login&vId=${verificationId}`;
+
+                verificationLinks.push({
+                    name: studentInfo.name,
+                    class: studentInfo.class,
+                    link: verificationLink,
+                    password: password,
+                    verificationId: verificationId
+                });
+            }
+
+            loadingBar.style.width = '100%';
+            loadingArea.querySelector('#status-message').textContent = "Tutte le verifiche sono state create e salvate!";
+            generateButton.disabled = false;
+            generateButton.innerHTML = originalButtonHTML;
+            setTimeout(() => {
+                navigate('dashboard', { links: JSON.stringify(verificationLinks) });
+            }, 1000);
+        }
+
+        window.createVerifications = createVerifications;
+
+
+        // --- LOGICA DI CORREZIONE E GRADING ---
+        function correctVerification(questions, studentAnswers, rubric) {
+            let totalScore = 0;
+            let maxScore = 0;
+            const correctedAnswers = [];
+
+            questions.forEach(q => {
+                maxScore += q.points;
+                const studentAnswer = studentAnswers[q.id] || ''; 
+                let score = 0;
+                let comment = '';
+                let isCorrect = false;
+
+                if (q.type === 'multiple-choice' || q.type === 'closed') {
+                    // Normalizzazione per confronto (case-insensitive)
+                    const normalizedStudentAnswer = studentAnswer.toString().toLowerCase().trim();
+                    const normalizedCorrectAnswer = q.correctAnswer.toString().toLowerCase().trim();
+
+                    if (normalizedStudentAnswer === normalizedCorrectAnswer) {
+                        score = q.points;
+                        comment = 'Risposta esatta. Punteggio massimo assegnato.';
+                        isCorrect = true;
+                    } else {
+                        comment = `Risposta errata. La risposta corretta attesa era: "${q.correctAnswer}".`;
+                    }
+                } else if (q.type === 'open' || q.type === 'practical') {
+                    // Valutazione preliminare automatica per domande aperte e pratiche
+                    // Non sono completamente corrette/sbagliate, ma una valutazione parziale
+                    const answerLength = studentAnswer.length;
+                    const requiredLength = 50; 
+                    const maxPoints = q.points;
+
+                    if (answerLength >= requiredLength) {
+                        score = Math.floor(maxPoints * 0.7); 
+                        comment = `Risposta articolata e completa. Valutazione preliminare automatica: ${score}/${maxPoints} punti. Criteri attesi: ${q.correctAnswer}.`;
+                        isCorrect = true; 
+                    } else if (answerLength > 15) {
+                        score = Math.floor(maxPoints * 0.4);
+                        comment = `Risposta sufficiente ma poco approfondita. Valutazione preliminare: ${score}/${maxPoints} punti. Criteri attesi: ${q.correctAnswer}.`;
+                    } else if (answerLength > 0) {
+                        score = Math.floor(maxPoints * 0.1);
+                        comment = `Risposta troppo concisa. Valutazione preliminare: ${score}/${maxPoints} punti.`;
+                    } else {
+                        score = 0;
+                        comment = 'Risposta mancante o non pertinente. Punti assegnati: 0.';
+                    }
+                }
+
+                totalScore += score;
+                correctedAnswers.push({
+                    questionId: q.id,
+                    answer: studentAnswer,
+                    isCorrect: isCorrect,
+                    score: score,
+                    maxPoints: q.points,
+                    comment: comment,
+                    questionText: q.text,
+                    questionType: q.type
+                });
+            });
+
+            const percentage = maxScore > 0 ? (totalScore / maxScore) * 100 : 0;
+            let finalGrade = 'Non classificato (0)';
+            let finalGradeNumeric = 0;
+
+            const ranges = Object.keys(rubric).map(range => {
+                const [min, max] = range.split('-').map(Number);
+                return { min, max, grade: rubric[range] };
+            }).sort((a, b) => a.min - b.min); 
+
+            for (const item of ranges) {
+                if (percentage >= item.min && percentage <= item.max) {
+                    finalGrade = item.grade;
+                    const gradeMatch = item.grade.match(/\((\d+)\)/);
+                    finalGradeNumeric = gradeMatch ? parseInt(gradeMatch[1]) : 0;
+                    break;
+                }
+            }
+
+            return { totalScore, maxScore, percentage, finalGrade, finalGradeNumeric, correctedAnswers };
+        }
+
+        // --- LOGICA DI SOTTOMISSIONE E CORREZIONE ---
+        window.submitQuiz = async function (verificationId) {
+            const form = document.getElementById('quiz-form');
+            const formData = new FormData(form);
+            const studentAnswers = {};
+            
+            const docRef = doc(getPublicVerificationCollection(), verificationId);
+            let docSnap;
+            
+            try {
+                // 1. Fetch del documento di verifica
+                docSnap = await getDoc(docRef);
+            } catch (e) {
+                console.error("Errore fetch verifica:", e);
+                showModal("Errore", "Impossibile recuperare la verifica. Riprova.");
+                return;
+            }
+
+            if (!docSnap.exists()) {
+                showModal("Errore", "Verifica non trovata. Impossibile consegnare.");
+                return;
+            }
+            const verificationDoc = docSnap.data();
+
+            // Raccogli le risposte
+            verificationDoc.questions.forEach(q => {
+                studentAnswers[q.id] = formData.get(`q-${q.id}`) || '';
+            });
+
+            // Recupera il nome dello studente dal campo nascosto
+            const studentName = formData.get('studentName') || 'Sconosciuto';
+            const studentPassword = formData.get('password') || 'N/A';
+            
+            showModal("Consegna in Corso", `Stiamo correggendo la verifica di ${studentName} e calcolando il voto in base alla griglia AI...`);
+            
+            // Correzione e grading
+            const results = correctVerification(verificationDoc.questions, studentAnswers, verificationDoc.rubric);
+
+            // 1. Aggiorna lo stato della verifica (Documento Pubblico)
+            await setDoc(docRef, {
+                status: 'submitted',
+                submissionDate: serverTimestamp(),
+                studentName: studentName, // Aggiorna con il nome inserito
+                password: studentPassword, // Aggiorna per l'archiviazione
+                studentAnswers: studentAnswers, // Risposte grezze
+            }, { merge: true }); 
+
+            // 2. Salva i risultati (Documento Risultati Pubblico)
+            await setDoc(doc(getPublicResultsCollection(), verificationId), {
+                verificationId: verificationId,
+                studentName: studentName,
+                assignedClass: verificationDoc.assignedClass,
+                topic: verificationDoc.topic,
+                totalScore: results.totalScore,
+                maxScore: results.maxScore,
+                percentage: results.percentage,
+                finalGrade: results.finalGrade,
+                finalGradeNumeric: results.finalGradeNumeric,
+                submissionDate: serverTimestamp(),
+                correctedAnswers: results.correctedAnswers,
+            }, { merge: true });
+
+            // 3. Reindirizza alla pagina dei risultati
+            document.getElementById('modal').classList.add('hidden');
+            navigate('results', { vId: verificationId });
+        }
+
+
+        // --- FUNZIONI DI RENDERING DELLE PAGINE ---
+
+        function renderSpinner(message = "Caricamento...") {
+            return `
+                <div class="flex flex-col items-center justify-center h-48 card p-6">
+                    <svg class="animate-spin h-8 w-8 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <p class="mt-4 text-lg font-semibold text-gray-700">${message}</p>
+                </div>
+            `;
+        }
+
+        // 1. Generatore di Quiz (Teacher)
+        function renderQuizGenerator() {
+            document.getElementById('app-container').innerHTML = `
+                <div id="quiz-generator" class="card p-6 md:p-10 mb-8">
+                    <h2 class="text-3xl font-bold text-gray-800 mb-6 border-b pb-2">🚀 Crea Nuova Verifica Intelligente</h2>
+                    <form id="generator-form" onsubmit="event.preventDefault(); handleGeneratorSubmit(event);">
+                        
+                        <div class="mb-6">
+                            <label for="topic" class="block text-lg font-medium text-gray-700 mb-2">Argomento della Verifica (es: Cicli in Python, Architettura Von Neumann)</label>
+                            <input type="text" id="topic" name="topic" required class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-gray-900" placeholder="Inserisci l'argomento centrale..." />
+                        </div>
+
+                        <div class="mb-6">
+                            <label for="complexity" class="block text-lg font-medium text-gray-700 mb-2">Livello di Complessità (Regola la difficoltà delle domande)</label>
+                            <select id="complexity" name="complexity" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-gray-900">
+                                <option value="Principiante">Principiante (Livello Base/Introduttivo)</option>
+                                <option value="Intermedio" selected>Intermedio (Livello Standard/Avanzato)</option>
+                                <option value="Avanzato">Avanzato (Livello Tecnico/Profondo)</option>
+                            </select>
+                        </div>
+
+                        <div class="mb-6">
+                            <h3 class="text-xl font-semibold text-gray-800 mb-4">Elenco Studenti e Classi (Uno per riga: Nome Cognome, Classe, Curriculo)</h3>
+                            <p class="text-sm text-gray-500 mb-2">Esempio: Mario Rossi, terza I, Indirizzo Tecnico | Anna Bianchi, quinta L, Indirizzo Liceale</p>
+                            <textarea id="students" name="students" rows="6" required class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-gray-900" placeholder="Nome Cognome, Classe, Curriculo (uno per riga)"></textarea>
+                        </div>
+                        
+                        <div id="loading-area" class="mt-8 mb-6 p-4 border border-indigo-200 bg-indigo-50 rounded-lg">
+                            <div class="h-2 bg-indigo-200 rounded-full mb-2">
+                                <div class="loading-bar bg-indigo-500"></div>
+                            </div>
+                            <p id="status-message" class="text-sm text-indigo-700">In attesa di generazione...</p>
+                        </div>
+
+                        <button type="submit" id="generate-button" class="btn-primary w-full py-3 rounded-xl text-lg font-bold shadow-lg shadow-indigo-500/50">
+                            Genera ${ALL_CLASSES.length} Verifiche Personalizzate con AI
+                        </button>
+                    </form>
+                </div>
+            `;
+        }
+
+        window.handleGeneratorSubmit = function(event) {
+            const form = event.target;
+            const topic = form.topic.value.trim();
+            const complexity = form.complexity.value;
+            const studentsRaw = form.students.value.trim();
+
+            if (!topic || !studentsRaw) {
+                showModal("Attenzione", "Compila tutti i campi richiesti.");
+                return;
+            }
+
+            const studentLines = studentsRaw.split('\n').filter(line => line.trim() !== '');
+            const studentsData = [];
+
+            try {
+                studentLines.forEach((line, index) => {
+                    const parts = line.split(',').map(p => p.trim());
+                    if (parts.length < 3) {
+                        throw new Error(`Linea ${index + 1} non valida. Formato richiesto: Nome Cognome, Classe, Curriculo.`);
+                    }
+                    studentsData.push({
+                        name: parts[0],
+                        class: parts[1],
+                        curriculum: parts[2] || 'Generico'
+                    });
+                });
+
+                if (studentsData.length === 0) {
+                    throw new Error("Nessun studente valido inserito.");
+                }
+
+                createVerifications(topic, studentsData, complexity);
+
+            } catch (e) {
+                showModal("Errore di Formattazione", e.message);
+            }
+        };
+
+        // 2. Dashboard Docente
+        function renderDashboard() {
+            const container = document.getElementById('app-container');
+            const urlParams = getRouteParams();
+            const linksJson = urlParams.get('links');
+            let successLinks = null;
+
+            if (linksJson) {
+                try {
+                    successLinks = JSON.parse(linksJson);
+                } catch (e) {
+                    console.error("Errore parsing link:", e);
+                }
+            }
+
+            const verificationListHtml = verificationsData.map(v => {
+                const resultsStatus = v.result ? `<span class="inline-flex items-center px-3 py-1 text-sm font-semibold rounded-full ${v.result.finalGradeNumeric >= 6 ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">${v.result.finalGrade}</span>` : `<span class="inline-flex items-center px-3 py-1 text-sm font-semibold rounded-full bg-yellow-100 text-yellow-800">${v.status === 'submitted' ? 'Da Correggere' : 'In attesa'}</span>`;
+
+                const linkToResults = `<button onclick="navigate('results', {vId: '${v.id}'})" class="ml-4 text-sm font-medium text-indigo-600 hover:text-indigo-900">Vedi Risultati</button>`;
+                
+                const classesList = v.classes ? v.classes.join(', ') : 'N/A';
+
+                return `
+                    <li class="p-4 flex items-center justify-between border-b last:border-b-0 hover:bg-gray-50 transition duration-150">
+                        <div class="flex-1 min-w-0">
+                            <p class="text-lg font-semibold text-gray-900">${v.topic} (${v.totalStudents} Verifiche)</p>
+                            <p class="text-sm text-gray-500">Classi: ${classesList} | Creazione: ${new Date(v.creationDate?.seconds * 1000 || Date.now()).toLocaleDateString()}</p>
+                        </div>
+                        <div class="flex items-center">
+                            ${resultsStatus}
+                            ${linkToResults}
+                        </div>
+                    </li>
+                `;
+            }).join('');
+
+            const linksTableHtml = successLinks ? `
+                <div class="card p-6 mb-8 bg-green-50 border border-green-200">
+                    <h3 class="text-2xl font-bold text-green-800 mb-4">✅ Verifiche Create con Successo</h3>
+                    <p class="text-green-700 mb-4">Condividi i seguenti link e password con i rispettivi studenti. Ogni link è personalizzato e valido solo per una consegna.</p>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-green-200">
+                            <thead>
+                                <tr class="text-left text-xs font-medium text-green-800 uppercase tracking-wider">
+                                    <th class="py-3 px-2">Studente (Classe)</th>
+                                    <th class="py-3 px-2">Password</th>
+                                    <th class="py-3 px-2">Link di Accesso</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-green-200">
+                                ${successLinks.map((linkData, index) => `
+                                    <tr class="bg-white text-gray-700">
+                                        <td class="py-3 px-2 whitespace-nowrap">${linkData.name} (${linkData.class})</td>
+                                        <td class="py-3 px-2 font-mono font-bold text-green-700">${linkData.password}</td>
+                                        <td class="py-3 px-2">
+                                            <div class="flex items-center space-x-2">
+                                                <input type="text" id="link-${index}" value="${linkData.link}" readonly class="text-xs w-full bg-gray-100 border border-gray-300 rounded-lg p-1.5 focus:ring-green-500" />
+                                                <button onclick="copyToClipboard('link-${index}')" class="text-sm text-green-600 hover:text-green-800 whitespace-nowrap">Copia</button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            ` : '';
+
+
+            container.innerHTML = `
+                ${linksTableHtml}
+
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-3xl font-bold text-gray-800">Verifiche Assegnate (${verificationsData.length})</h2>
+                    <button onclick="navigate('generator')" class="btn-primary px-5 py-2 rounded-lg font-semibold flex items-center shadow-md">
+                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                        Nuova Verifica
+                    </button>
+                </div>
+                
+                <div class="card p-0">
+                    <ul class="divide-y divide-gray-200">
+                        ${verificationListHtml || '<li class="p-6 text-center text-gray-500">Nessuna verifica creata. Clicca su "Nuova Verifica" per iniziare.</li>'}
+                    </ul>
+                </div>
+            `;
+        }
+
+
+        // 3. Login dello Studente (Public)
+        async function renderStudentLogin() {
+            const urlParams = getRouteParams();
+            const verificationId = urlParams.get('vId');
+
+            if (!verificationId) {
+                document.getElementById('app-container').innerHTML = `<div class="p-10 text-center text-red-500 card">ID Verifica mancante. Controlla il link.</div>`;
+                return;
+            }
+
+            // Tentativo di pre-fetch della verifica per ottenere il topic
+            const docRef = doc(getPublicVerificationCollection(), verificationId);
+            let verificationDoc = null;
+            try {
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    verificationDoc = docSnap.data();
+                    if (verificationDoc.status === 'submitted') {
+                        navigate('results', { vId: verificationId }); // Se già consegnata, vai ai risultati
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.error("Errore fetch verifica:", e);
+            }
+            
+            const topic = verificationDoc ? verificationDoc.topic : 'Verifica di Informatica/Tecnologia';
+
+            document.getElementById('app-container').innerHTML = `
+                <div class="max-w-md mx-auto card p-8 mt-10">
+                    <h2 class="text-3xl font-extrabold text-indigo-600 mb-2">Accesso alla Verifica</h2>
+                    <p class="text-gray-600 mb-6">Completa i tuoi dati per accedere: <strong class="text-indigo-700">${topic}</strong></p>
+                    <form id="student-login-form">
+                        <input type="hidden" name="verificationId" value="${verificationId}">
+                        <div class="mb-4">
+                            <label for="studentName" class="block text-sm font-medium text-gray-700 mb-1">Nome e Cognome (Completi)</label>
+                            <input type="text" id="studentName" name="studentName" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500" placeholder="Es: Giulia Bianchi" value="${verificationDoc?.studentName !== 'N/A' ? verificationDoc?.studentName || '' : ''}" />
+                            <p class="text-xs text-gray-500 mt-1">Questo nome verrà salvato per la valutazione.</p>
+                        </div>
+                        <div class="mb-6">
+                            <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Codice di Accesso (Fornito dal Docente)</label>
+                            <input type="password" id="password" name="password" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500" placeholder="Inserisci la password di 6 caratteri" maxlength="6" />
+                        </div>
+                        <button type="submit" class="btn-primary w-full py-2.5 rounded-lg font-semibold">Inizia la Verifica</button>
+                    </form>
+                </div>
+            `;
+            
+            document.getElementById('student-login-form').onsubmit = async (e) => {
+                e.preventDefault();
+                const form = e.target;
+                const name = form.studentName.value.trim();
+                const password = form.password.value.trim().toUpperCase();
+
+                if (!verificationDoc || verificationDoc.password !== password) {
+                    showModal("Accesso Negato", "Password non corretta o verifica non valida. Controlla il codice fornito.");
+                    return;
+                }
+                
+                // Aggiorna il nome dello studente nel documento di verifica in modo che appaia subito nella dashboard
+                await setDoc(docRef, { studentName: name, status: 'in_progress' }, { merge: true });
+
+                // Reindirizza al quiz
+                navigate('quiz', { vId: verificationId });
+            };
+        }
+
+
+        // 4. Pagina del Quiz (Public)
+        async function renderQuiz() {
+            const urlParams = getRouteParams();
+            const verificationId = urlParams.get('vId');
+
+            if (!verificationId) {
+                document.getElementById('app-container').innerHTML = `<div class="p-10 text-center text-red-500 card">ID Verifica mancante. Controlla il link.</div>`;
+                return;
+            }
+
+            document.getElementById('app-container').innerHTML = renderSpinner("Caricamento verifica...");
+
+            const docRef = doc(getPublicVerificationCollection(), verificationId);
+            let verificationDoc;
+
+            try {
+                const docSnap = await getDoc(docRef);
+                if (!docSnap.exists()) {
+                    document.getElementById('app-container').innerHTML = `<div class="p-10 text-center text-red-500 card">Verifica non trovata o scaduta.</div>`;
+                    return;
+                }
+                verificationDoc = docSnap.data();
+
+                if (verificationDoc.status === 'submitted') {
+                    navigate('results', { vId: verificationId });
+                    return;
+                }
+            } catch (e) {
+                console.error("Errore fetch verifica:", e);
+                document.getElementById('app-container').innerHTML = `<div class="p-10 text-center text-red-500 card">Errore di comunicazione con il database.</div>`;
+                return;
+            }
+
+            const totalMaxPoints = verificationDoc.questions.reduce((sum, q) => sum + q.points, 0);
+
+            const questionHtml = verificationDoc.questions.map((q, index) => {
+                let inputField;
+                let isMultipleChoice = q.type === 'multiple-choice';
+                
+                if (isMultipleChoice && q.options && q.options.length > 0) {
+                    inputField = q.options.map((option, optIndex) => `
+                        <div class="flex items-center mb-2">
+                            <input id="q-${q.id}-${optIndex}" type="radio" name="q-${q.id}" value="${option}" class="h-4 w-4 text-indigo-600 border-gray-300 focus:ring-indigo-500" required>
+                            <label for="q-${q.id}-${optIndex}" class="ml-3 block text-sm font-medium text-gray-700">${option}</label>
+                        </div>
+                    `).join('');
+                } else if (q.type === 'open' || q.type === 'practical') {
+                    // Domande aperte/pratiche richiedono risposte lunghe
+                    inputField = `
+                        <textarea id="q-${q.id}" name="q-${q.id}" rows="6" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500" placeholder="Inserisci qui la tua risposta dettagliata (codice, spiegazione, ecc.)"></textarea>
+                        <p class="text-xs text-gray-500 mt-1">Risposta attesa (Criteri di valutazione per il docente): ${q.correctAnswer}</p>
+                    `;
+                } else {
+                    // Domande chiuse/testuali brevi
+                    inputField = `
+                        <input type="text" id="q-${q.id}" name="q-${q.id}" required class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500" placeholder="Inserisci la risposta breve qui" />
+                    `;
+                }
+
+                const imageHtml = q.image ? `<div class="my-4"><img src="${q.image}" alt="Diagramma o Schema per la Domanda ${q.id}" class="rounded-lg shadow-md w-full max-w-sm mx-auto" onerror="this.onerror=null;this.src='https://placehold.co/400x250/F0F4FF/4F46E5?text=Immagine+Non+Disponibile';" /></div>` : '';
+
+                return `
+                    <div class="card p-6 mb-6 border-l-4 border-indigo-500">
+                        <div class="flex justify-between items-start mb-4">
+                            <h3 class="text-xl font-bold text-gray-900">Domanda ${index + 1} (${q.type === 'multiple-choice' ? 'Scelta Multipla' : q.type === 'open' ? 'Aperta' : q.type === 'practical' ? 'Pratica/Esercizio' : 'Chiusa'})</h3>
+                            <span class="text-indigo-600 font-extrabold text-lg">${q.points} Punti</span>
+                        </div>
+                        <p class="text-lg text-gray-800 mb-4">${q.text}</p>
+                        
+                        ${imageHtml}
+                        
+                        <div class="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            ${inputField}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            document.getElementById('app-container').innerHTML = `
+                <div class="max-w-4xl mx-auto py-4">
+                    <h2 class="text-3xl font-extrabold text-gray-800 mb-2">${verificationDoc.topic}</h2>
+                    <p class="text-gray-600 mb-6 border-b pb-4">Studente: <strong>${verificationDoc.studentName}</strong> | Classe: <strong>${verificationDoc.assignedClass}</strong> | Punteggio Totale: <strong>${totalMaxPoints} Punti</strong></p>
+
+                    <form id="quiz-form" onsubmit="event.preventDefault(); submitQuiz('${verificationId}');">
+                        <input type="hidden" name="studentName" value="${verificationDoc.studentName}">
+                        <input type="hidden" name="password" value="${verificationDoc.password}">
+                        <div class="quiz-content">
+                            ${questionHtml}
+                        </div>
+
+                        <div class="mt-8 pt-6 border-t border-gray-300">
+                            <button type="submit" class="btn-primary w-full py-3 rounded-xl text-lg font-bold shadow-lg shadow-indigo-500/50">
+                                Consegna la Verifica
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            `;
+        }
+
+
+        // 5. Pagina dei Risultati (Public/Teacher)
+        async function renderResults() {
+            const urlParams = getRouteParams();
+            const verificationId = urlParams.get('vId');
+
+            if (!verificationId) {
+                document.getElementById('app-container').innerHTML = `<div class="p-10 text-center text-red-500 card">ID Verifica mancante. Controlla il link.</div>`;
+                return;
+            }
+
+            document.getElementById('app-container').innerHTML = renderSpinner("Caricamento risultati e correzioni...");
+
+            const verifDocRef = doc(getPublicVerificationCollection(), verificationId);
+            const resultDocRef = doc(getPublicResultsCollection(), verificationId);
+            
+            let verificationDoc;
+            let resultsDoc;
+
+            try {
+                const [verifSnap, resultSnap] = await Promise.all([getDoc(verifDocRef), getDoc(resultDocRef)]);
+
+                if (!verifSnap.exists() || !resultSnap.exists()) {
+                    document.getElementById('app-container').innerHTML = `<div class="p-10 text-center text-red-500 card">Risultati non disponibili o verifica non ancora consegnata.</div>`;
+                    return;
+                }
+                verificationDoc = verifSnap.data();
+                resultsDoc = resultSnap.data();
+
+            } catch (e) {
+                console.error("Errore fetch risultati:", e);
+                document.getElementById('app-container').innerHTML = `<div class="p-10 text-center text-red-500 card">Errore di comunicazione con il database.</div>`;
+                return;
+            }
+
+            const finalGradeClass = resultsDoc.finalGradeNumeric >= 6 ? 'text-green-600 bg-green-100' : 'text-red-600 bg-red-100';
+            const studentName = verificationDoc.studentName;
+            
+            const answersHtml = resultsDoc.correctedAnswers.map((result, index) => {
+                const question = verificationDoc.questions.find(q => q.id === result.questionId) || {};
+                const isCorrectClass = result.isCorrect && result.score === result.maxPoints ? 'border-green-500 bg-green-50' : (result.score > 0 ? 'border-yellow-500 bg-yellow-50' : 'border-red-500 bg-red-50');
+                const icon = result.score === result.maxPoints ? '✅' : (result.score > 0 ? '⚠️' : '❌');
+
+                return `
+                    <div class="card p-4 mb-4 border-l-4 ${isCorrectClass} transition duration-300">
+                        <div class="flex justify-between items-start mb-2">
+                            <h4 class="text-md font-bold text-gray-800">${icon} Domanda ${index + 1}: ${question.text}</h4>
+                            <span class="text-lg font-extrabold ${result.score > 0 ? 'text-green-700' : 'text-red-700'}">${result.score}/${result.maxPoints} Punti</span>
+                        </div>
+
+                        <div class="mt-3 text-sm">
+                            <p class="font-semibold text-gray-700">La tua risposta:</p>
+                            <p class="bg-white p-2 border rounded-md whitespace-pre-wrap">${result.answer || 'Risposta mancante'}</p>
+                            
+                            <p class="font-semibold text-gray-700 mt-2">Correzione Automatica:</p>
+                            <p class="${result.score === result.maxPoints ? 'text-green-700' : 'text-red-700'} italic">${result.comment}</p>
+                            
+                            ${(question.type === 'multiple-choice' || question.type === 'closed') && result.score < result.maxPoints ? 
+                                `<p class="mt-2 font-semibold text-indigo-700">Risposta Attesa: ${question.correctAnswer}</p>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+
+            const rubricHtml = Object.keys(verificationDoc.rubric).map(range => {
+                return `<li class="p-1 text-sm">${range}%: ${verificationDoc.rubric[range]}</li>`;
+            }).join('');
+
+            document.getElementById('app-container').innerHTML = `
+                <div id="printable-area" class="max-w-4xl mx-auto py-4">
+                    
+                    <!-- Intestazione Ufficiale per la Stampa (Nascosto in visualizzazione web) -->
+                    <div class="official-header hidden">
+                        <h1 class="text-3xl font-extrabold text-gray-900 mb-1">Verifica di ${verificationDoc.topic}</h1>
+                        <p class="text-lg text-gray-700">Studente: _________________________ &nbsp; &nbsp; Classe: ${verificationDoc.assignedClass}</p>
+                        <p class="text-lg text-gray-700">Data: ${new Date(resultsDoc.submissionDate?.seconds * 1000 || Date.now()).toLocaleDateString()}</p>
+                    </div>
+
+                    <!-- Sezione Risultati (Visibile sempre) -->
+                    <div class="card p-8 mb-8">
+                        <h2 class="text-3xl font-extrabold text-gray-800 mb-4">Risultati: ${studentName}</h2>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
+                            <div class="p-4 rounded-xl shadow-inner ${finalGradeClass}">
+                                <p class="text-sm font-medium uppercase">Voto Finale</p>
+                                <p class="text-4xl font-black">${resultsDoc.finalGrade}</p>
+                            </div>
+                            <div class="p-4 rounded-xl bg-gray-100">
+                                <p class="text-sm font-medium uppercase text-gray-500">Punti Totali</p>
+                                <p class="text-4xl font-black text-gray-800">${resultsDoc.totalScore}/${resultsDoc.maxScore}</p>
+                            </div>
+                            <div class="p-4 rounded-xl bg-gray-100">
+                                <p class="text-sm font-medium uppercase text-gray-500">Percentuale</p>
+                                <p class="text-4xl font-black text-gray-800">${resultsDoc.percentage.toFixed(1)}%</p>
+                            </div>
+                        </div>
+
+                        <div class="mt-6 p-4 bg-white border border-gray-200 rounded-lg">
+                            <h3 class="text-xl font-semibold mb-2 text-indigo-700">Griglia di Valutazione (Rubrica)</h3>
+                            <ul class="list-disc list-inside text-gray-600 grid grid-cols-2">
+                                ${rubricHtml}
+                            </ul>
+                        </div>
+
+                        <div class="mt-8 no-print">
+                            <button onclick="window.print()" class="btn-primary px-5 py-2.5 rounded-lg font-semibold flex items-center mx-auto shadow-md">
+                                <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2v2H5v-2h2M5 9H3v6h18V9h-2M5 9a2 2 0 012-2h10a2 2 0 012 2M10 18h4"></path></svg>
+                                Stampa o Salva in PDF
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Sezione Dettaglio Risposte Corrette (Visibile sempre) -->
+                    <div class="mb-8">
+                        <h3 class="text-2xl font-bold text-gray-800 mb-4">Dettaglio Correzione Domande</h3>
+                        <div class="quiz-content">
+                            ${answersHtml}
+                        </div>
+                    </div>
+
+                    <!-- Area Firma per la Stampa -->
+                    <div class="official-header hidden mt-10 pt-4 border-t border-gray-300">
+                        <div class="flex justify-between">
+                            <div class="w-1/2 pr-4">
+                                <p class="text-sm text-gray-700">Firma dello Studente:</p>
+                                <div class="signature-area border-b border-gray-400 mt-2"></div>
+                            </div>
+                            <div class="w-1/2 pl-4">
+                                <p class="text-sm text-gray-700">Firma del Docente:</p>
+                                <div class="signature-area border-b border-gray-400 mt-2"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            `;
+        }
+
+        // 6. Router principale
+        function renderApp() {
+            const container = document.getElementById('app-container');
+            const urlParams = getRouteParams();
+            const vId = urlParams.get('vId');
+            
+            // Logica di routing generale
+            if (vId) {
+                // Routing per studenti (vId è presente)
+                switch (currentRoute) {
+                    case 'quiz':
+                        renderQuiz();
+                        break;
+                    case 'results':
+                        renderResults();
+                        break;
+                    case 'student-login':
+                    default:
+                        renderStudentLogin();
+                        break;
+                }
+                // Nasconde l'info docente per lo studente
+                document.getElementById('user-info').textContent = '';
+                document.querySelector('header').classList.add('hidden');
+                document.querySelector('.app-shell').style.paddingTop = '1rem';
+
+            } else {
+                // Routing per docenti (vId non è presente)
+                document.querySelector('header').classList.remove('hidden');
+                document.querySelector('.app-shell').style.paddingTop = '2rem';
+                
+                if (!userId) {
+                    container.innerHTML = renderSpinner("Autenticazione docente in corso...");
+                    return;
+                }
+                
+                switch (currentRoute) {
+                    case 'generator':
+                        renderQuizGenerator();
+                        break;
+                    case 'dashboard':
+                    default:
+                        renderDashboard();
+                        break;
+                }
+            }
+        }
+
+        // Avvia l'applicazione all'apertura della pagina
+        window.onload = initializeAppAndAuth;
+
+    </script>
+</body>
+</html>
