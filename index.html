@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generatore di Verifiche Intelligente</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.21/jspdf.plugin.autotable.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+        .loading-overlay { background: rgba(255, 255, 255, 0.8); z-index: 1000; }
+        .spinner { border-top-color: #3b82f6; }
+    </style>
+</head>
+<body class="min-h-screen">
+
+    <div id="loadingOverlay" class="fixed inset-0 loading-overlay flex items-center justify-center hidden">
+        <div class="spinner border-8 border-gray-200 border-solid rounded-full h-12 w-12 animate-spin"></div>
+        <p id="loadingMessage" class="ml-4 text-lg text-gray-700">Caricamento...</p>
+    </div>
+
+    <header class="bg-indigo-700 text-white shadow-lg p-4">
+        <div class="max-w-4xl mx-auto flex justify-between items-center">
+            <h1 class="text-2xl font-bold">Generatore Verifiche AI</h1>
+            <div id="authInfo" class="text-sm"></div>
+        </div>
+    </header>
+
+    <main class="max-w-4xl mx-auto p-6">
+        <div id="appContainer" class="bg-white p-6 rounded-xl shadow-2xl">
+            <!-- Il contenuto verrà caricato qui in base al routing -->
+            <h2 class="text-xl font-semibold text-gray-700">Caricamento applicazione...</h2>
+        </div>
+    </main>
+
+    <footer class="text-center p-4 text-sm text-gray-500 mt-8">
+        Applicazione alimentata da Gemini e Firebase Firestore.
+    </footer>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, onSnapshot, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Variabili globali fornite dall'ambiente Canvas
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        // Costante per l'API Key (deve rimanere vuota per l'iniezione automatica nell'ambiente)
+        const GEMINI_API_KEY = "";
+        const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent";
+        const basePath = `/artifacts/${appId}/public/data`; // Percorso per dati pubblici (verifiche e tentativi)
+
+        let app;
+        let db;
+        let auth;
+        let userId = null;
+        let isAuthReady = false;
+
+        const appContainer = document.getElementById('appContainer');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingMessage = document.getElementById('loadingMessage');
+        const authInfo = document.getElementById('authInfo');
+
+        // --- Stato Globale dell'Applicazione ---
+        let currentQuiz = null; // Dati della verifica correnti (solo per il professore)
+        let currentAttempt = null; // Dati del tentativo dello studente
+
+        // Funzione di utilità per mostrare/nascondere il caricamento
+        const toggleLoading = (show, message = 'Elaborazione in corso...') => {
+            loadingMessage.textContent = message;
+            loadingOverlay.classList.toggle('hidden', !show);
+        };
+
+        // --- Funzioni di base per Firebase ---
+        
+        setLogLevel('Debug'); // Abilita i log di debug per Firestore
+
+        async function initFirebase() {
+            try {
+                if (Object.keys(firebaseConfig).length === 0) {
+                    console.error("Errore: configurazione Firebase non trovata.");
+                    return;
+                }
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        authInfo.innerHTML = `Utente: <span class="font-medium">${userId.substring(0, 8)}...</span>`;
+                        console.log("Autenticato con UID:", userId);
+                    } else {
+                        // Se non c'è utente e non c'è token, proviamo l'anonimo
+                        if (!initialAuthToken) {
+                            const anonUser = await signInAnonymously(auth);
+                            userId = anonUser.user.uid;
+                            authInfo.innerHTML = `Utente Anonimo: <span class="font-medium">${userId.substring(0, 8)}...</span>`;
+                            console.log("Accesso anonimo con UID:", userId);
+                        }
+                    }
+                    isAuthReady = true;
+                    handleRouting(); // Avvia il routing solo dopo l'autenticazione
+                });
+
+                // Se è disponibile un token personalizzato (token d'avvio), usalo.
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                }
+
+            } catch (error) {
+                console.error("Errore nell'inizializzazione di Firebase o nell'autenticazione:", error);
+                // Fallback: se l'autenticazione fallisce, imposta un ID casuale
+                if (!userId) {
+                    userId = crypto.randomUUID();
+                    isAuthReady = true;
+                    handleRouting();
+                    authInfo.innerHTML = `Utente Offline: <span class="font-medium">${userId.substring(0, 8)}...</span>`;
+                }
+            }
+        }
+
+        // --- Funzione per la chiamata all'API Gemini con Backoff ---
+        async function geminiApiCall(payload, loadingMsg) {
+            if (!isAuthReady) {
+                console.error("Auth non pronta.");
+                return null;
+            }
+            toggleLoading(true, loadingMsg);
+
+            let lastError = null;
+            for (let i = 0; i < 3; i++) { // Max 3 tentativi
+                try {
+                    const response = await fetch(GEMINI_API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        toggleLoading(false);
+                        return result;
+                    } else {
+                        const errorData = await response.json();
+                        lastError = new Error(`API Error ${response.status}: ${errorData.error?.message || 'Unknown error'}`);
+                        console.error(`Tentativo ${i + 1} fallito.`, lastError);
+                    }
+                } catch (error) {
+                    lastError = error;
+                    console.error(`Tentativo ${i + 1} fallito a causa di un errore di rete/fetch:`, error);
+                }
+
+                if (i < 2) { // Non aspettare dopo l'ultimo tentativo
+                    const delay = Math.pow(2, i) * 1000 + Math.floor(Math.random() * 1000);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+
+            toggleLoading(false);
+            console.error("Gemini API fallita dopo i tentativi.", lastError);
+            alert(`Si è verificato un errore durante l'elaborazione: ${lastError.message || 'Controlla la console per i dettagli.'}`);
+            return null;
+        }
+
+        // --- Logica di Generazione della Verifica (Professor) ---
+        
+        function renderProfessorView() {
+            appContainer.innerHTML = `
+                <h2 class="text-3xl font-extrabold text-indigo-700 mb-6">Area Professore: Crea Nuova Verifica</h2>
+
+                <div class="space-y-4 mb-8 p-6 bg-indigo-50 rounded-lg border border-indigo-200 shadow-inner">
+                    <label class="block text-gray-700 font-semibold">Argomento / Testo di Riferimento:</label>
+                    <textarea id="topicText" rows="10" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-sm" placeholder="Incolla qui il testo completo da cui generare la verifica (es. un capitolo, un articolo)."></textarea>
+
+                    <label class="block text-gray-700 font-semibold">Numero Stimato di Studenti (per riferimento):</label>
+                    <input type="number" id="numStudents" value="25" min="1" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-sm" placeholder="Esempio: 25">
+
+                    <button id="generateQuizBtn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition duration-200 shadow-md">
+                        Genera Verifica con AI
+                    </button>
+                </div>
+                
+                <div id="quizPreview" class="mt-8">
+                    <!-- Preview e link saranno visualizzati qui -->
+                </div>
+            `;
+
+            document.getElementById('generateQuizBtn').addEventListener('click', handleGenerateQuiz);
+            if (currentQuiz) {
+                displayQuizPreview(currentQuiz.quizData, currentQuiz.quizId);
+            }
+        }
+
+        async function handleGenerateQuiz() {
+            const topicText = document.getElementById('topicText').value.trim();
+            const numStudents = parseInt(document.getElementById('numStudents').value.trim() || '0');
+            
+            if (topicText.length < 50) {
+                alert("Per favore, inserisci un testo di riferimento più lungo (minimo 50 caratteri) per generare una verifica significativa.");
+                return;
+            }
+
+            const systemPrompt = "Sei un esperto creatore di test e verifiche per studenti. Basandoti sul testo fornito, devi generare una verifica completa in formato JSON. La verifica deve includere un mix di tipi di domande: scelta multipla (max 4 opzioni), vero/falso, risposta aperta e domande che utilizzano risorse multimediali (immagini placeholder o link esterni trovati tramite Google Search). Assicurati che ogni domanda abbia una chiave di risposta corretta esplicita. Se usi Google Search, includi nella risposta solo il link all'immagine o alla risorsa trovata per arricchire la domanda. La verifica deve essere coerente con il testo fornito.";
+            
+            const userQuery = `Crea una verifica completa (almeno 8 domande di tipi misti) sul seguente argomento/testo:\n\n---\n${topicText}\n---`;
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                tools: [{ google_search: {} }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "OBJECT",
+                        properties: {
+                            title: { type: "STRING", description: "Titolo della verifica." },
+                            description: { type: "STRING", description: "Breve descrizione." },
+                            questions: {
+                                type: "ARRAY",
+                                items: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        id: { type: "NUMBER", description: "ID unico della domanda (da 1 a N)." },
+                                        type: { type: "STRING", description: "Tipo: 'multiple_choice', 'true_false', 'open_ended', 'gap_fill'." },
+                                        text: { type: "STRING", description: "Testo della domanda." },
+                                        options: { type: "ARRAY", items: { type: "STRING" }, description: "Opzioni se 'multiple_choice' o 'true_false'." },
+                                        correctAnswer: { type: "STRING", description: "La risposta corretta, l'opzione giusta, o la risposta modello per 'open_ended'." },
+                                        mediaUrl: { type: "STRING", description: "URL di un'immagine o risorsa esterna pertinente (trovata tramite Google Search)." }
+                                    },
+                                    required: ["id", "type", "text", "correctAnswer"]
+                                }
+                            }
+                        },
+                        required: ["title", "description", "questions"]
+                    }
+                }
+            };
+
+            const response = await geminiApiCall(payload, "Generazione della verifica in corso...");
+
+            if (response && response.candidates && response.candidates.length > 0) {
+                const jsonText = response.candidates[0].content.parts[0].text;
+                try {
+                    const quizData = JSON.parse(jsonText);
+                    
+                    // Salva la verifica su Firestore
+                    const quizRef = await addDoc(collection(db, `${basePath}/quizzes`), {
+                        professorId: userId,
+                        title: quizData.title,
+                        topicText: topicText,
+                        expectedStudents: numStudents,
+                        createdAt: new Date().toISOString(),
+                        quizData: quizData
+                    });
+                    
+                    currentQuiz = { quizId: quizRef.id, quizData: quizData };
+                    displayQuizPreview(quizData, quizRef.id);
+
+                } catch (e) {
+                    console.error("Errore nel parsing o nel salvataggio della verifica:", e);
+                    alert("Errore: Impossibile elaborare i dati della verifica generata dall'AI. Riprova o modifica il testo.");
+                }
+            } else {
+                 console.error("Risposta Gemini non valida:", response);
+                 alert("Impossibile ricevere una risposta valida dal modello AI.");
+            }
+        }
+
+        function displayQuizPreview(quizData, quizId) {
+            const previewDiv = document.getElementById('quizPreview');
+            const studentLink = `${window.location.origin}${window.location.pathname}?quizId=${quizId}`;
+            
+            let questionsHtml = quizData.questions.map(q => {
+                let optionsHtml = '';
+                if (q.options) {
+                    optionsHtml = q.options.map((opt, i) => `<li class="ml-4">${String.fromCharCode(97 + i)}. ${opt}</li>`).join('');
+                    optionsHtml = `<ul class="list-none space-y-1 mt-1 text-gray-600">${optionsHtml}</ul>`;
+                }
+                
+                const mediaHtml = q.mediaUrl ? 
+                    `<div class="my-2 p-2 border border-dashed border-gray-300 rounded-md">
+                        <p class="text-sm font-semibold">Risorsa Aggiuntiva (Media/Immagine):</p>
+                        <a href="${q.mediaUrl}" target="_blank" class="text-indigo-500 hover:underline text-xs truncate block">${q.mediaUrl}</a>
+                        <!-- Placeholder per immagine -->
+                        <img src="${q.mediaUrl}" onerror="this.onerror=null;this.src='https://placehold.co/400x150/f9fafb/6b7280?text=Immagine+di+supporto';" class="mt-2 max-w-full h-auto rounded-md shadow" alt="Immagine di supporto">
+                    </div>` 
+                    : '';
+
+                return `
+                    <div class="p-4 bg-gray-50 rounded-lg shadow-inner border border-gray-200">
+                        <p class="font-bold text-gray-700">Domanda ${q.id} (${q.type.replace('_', ' ')}):</p>
+                        <p class="mt-1">${q.text}</p>
+                        ${optionsHtml}
+                        ${mediaHtml}
+                        <p class="mt-2 text-sm text-green-600 font-semibold">Risposta Corretta: ${q.correctAnswer}</p>
+                    </div>
+                `;
+            }).join('<div class="h-4"></div>');
+
+
+            previewDiv.innerHTML = `
+                <div class="mb-6">
+                    <h3 class="text-2xl font-bold text-gray-800">${quizData.title}</h3>
+                    <p class="text-gray-500">${quizData.description}</p>
+                </div>
+
+                <div class="mb-6 p-4 bg-yellow-100 rounded-lg border border-yellow-300 flex justify-between items-center">
+                    <div>
+                        <p class="font-semibold text-yellow-800">Link da Condividere con gli Studenti:</p>
+                        <a id="studentLinkDisplay" href="${studentLink}" target="_blank" class="text-blue-600 hover:underline break-all">${studentLink}</a>
+                    </div>
+                    <button onclick="copyToClipboard('${studentLink}')" class="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded-lg ml-4 shadow-md transition duration-200">Copia Link</button>
+                </div>
+                
+                <div class="space-y-4">
+                    ${questionsHtml}
+                </div>
+                
+                <div class="mt-8 p-6 bg-gray-100 rounded-lg border border-gray-300">
+                    <h3 class="text-xl font-bold text-gray-700 mb-4">Risultati degli Studenti</h3>
+                    <div id="attemptsList">Caricamento tentativi...</div>
+                    <button id="generateProfessorReportBtn" class="mt-4 bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-200" disabled>
+                        Genera Report Professore (PDF)
+                    </button>
+                </div>
+            `;
+            
+            // Abilita la generazione del PDF se ci sono tentativi
+            document.getElementById('generateProfessorReportBtn').addEventListener('click', () => generateProfessorPDF(quizId, quizData));
+
+            // Inizializza l'ascoltatore dei tentativi
+            listenForAttempts(quizId);
+        }
+
+        // --- Logica di Visualizzazione Tentativi e Ascolto Firestore ---
+        let attemptsListener = null;
+
+        function listenForAttempts(quizId) {
+            if (attemptsListener) attemptsListener(); // Rimuovi l'ascoltatore precedente
+
+            const attemptsColRef = collection(db, `${basePath}/attempts`);
+            const q = query(attemptsColRef, where("quizId", "==", quizId));
+
+            attemptsListener = onSnapshot(q, (snapshot) => {
+                const attempts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderAttemptsList(attempts, quizId);
+            }, (error) => {
+                console.error("Errore nell'ascolto dei tentativi:", error);
+            });
+        }
+
+        function renderAttemptsList(attempts, quizId) {
+            const listDiv = document.getElementById('attemptsList');
+            const generateReportBtn = document.getElementById('generateProfessorReportBtn');
+            
+            if (attempts.length === 0) {
+                listDiv.innerHTML = '<p class="text-gray-500 italic">Nessun tentativo inviato finora.</p>';
+                generateReportBtn.disabled = true;
+                return;
+            }
+
+            generateReportBtn.disabled = false;
+
+            const listHtml = attempts.map(attempt => {
+                const score = attempt.correctionData?.score !== undefined ? attempt.correctionData.score : 'N/D';
+                const evaluation = attempt.correctionData?.evaluation || 'In attesa di correzione...';
+                
+                let scoreColor = 'text-gray-600';
+                if (score !== 'N/D') {
+                    const numScore = parseFloat(score);
+                    if (numScore >= 8) scoreColor = 'text-green-600 font-bold';
+                    else if (numScore >= 6) scoreColor = 'text-yellow-600 font-bold';
+                    else scoreColor = 'text-red-600 font-bold';
+                }
+
+                return `
+                    <div class="flex justify-between items-center p-3 bg-white rounded-lg shadow-md mb-2 border border-gray-200">
+                        <div class="flex-1">
+                            <p class="font-semibold text-gray-800">${attempt.studentName} (${attempt.studentClass})</p>
+                            <p class="text-xs text-gray-500">${attempt.studentDate}</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-sm">Voto: <span class="${scoreColor} text-lg">${score}</span> / 10</p>
+                            <p class="text-xs text-gray-600 italic truncate max-w-xs">${evaluation}</p>
+                        </div>
+                        <button onclick="handleViewAttempt('${attempt.id}', '${quizId}')" class="bg-indigo-500 hover:bg-indigo-600 text-white text-sm py-1 px-3 rounded-lg ml-4 shadow-sm transition duration-200">
+                            Vedi Dettagli
+                        </button>
+                    </div>
+                `;
+            }).join('');
+            
+            listDiv.innerHTML = listHtml;
+        }
+        
+        // Funzione per visualizzare un tentativo specifico (simula un modale o un cambio di vista)
+        async function handleViewAttempt(attemptId, quizId) {
+            toggleLoading(true, "Caricamento tentativo...");
+            try {
+                const attemptDoc = await getDoc(doc(db, `${basePath}/attempts`, attemptId));
+                const quizDoc = await getDoc(doc(db, `${basePath}/quizzes`, quizId));
+
+                if (attemptDoc.exists() && quizDoc.exists()) {
+                    const attempt = { id: attemptDoc.id, ...attemptDoc.data() };
+                    const quizData = quizDoc.data().quizData;
+                    renderAttemptDetails(attempt, quizData);
+                } else {
+                    alert("Tentativo o verifica non trovati.");
+                }
+            } catch(e) {
+                console.error("Errore nel caricamento del tentativo:", e);
+            } finally {
+                toggleLoading(false);
+            }
+        }
+        
+        function renderAttemptDetails(attempt, quizData) {
+            // Qui si può creare un modale o una nuova vista, per semplicità usiamo un semplice alert/console
+            console.log("Dettagli Tentativo:", attempt);
+            
+            const detailsHtml = `
+                <h3 class="text-2xl font-bold text-indigo-700 mb-4">Dettagli Correzione: ${attempt.studentName}</h3>
+                <p class="mb-4">Classe: ${attempt.studentClass} | Data: ${attempt.studentDate}</p>
+                <div class="p-4 bg-green-50 rounded-lg border border-green-300 mb-6">
+                    <p class="text-lg font-bold text-green-700">Voto Finale: ${attempt.correctionData.score} / 10</p>
+                    <p class="text-sm text-gray-700 mt-1">Valutazione AI: ${attempt.correctionData.evaluation}</p>
+                </div>
+                
+                ${quizData.questions.map((q, index) => {
+                    const studentAnswer = attempt.studentAnswers[`q${q.id}`] || 'Nessuna risposta';
+                    const feedback = attempt.correctionData.questionFeedback[index] || { comment: 'Nessun feedback specifico.', status: 'Non Corretto' };
+                    
+                    const statusColor = feedback.status.toLowerCase().includes('corretto') ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
+                    
+                    return `
+                        <div class="p-4 border border-gray-200 rounded-lg mb-4">
+                            <p class="font-semibold">${q.id}. ${q.text}</p>
+                            <p class="mt-1 text-sm text-gray-600">Tua Risposta: <span class="font-medium italic">${studentAnswer}</span></p>
+                            <p class="text-sm text-green-600">Risposta Attesa: <span class="font-medium">${q.correctAnswer}</span></p>
+                            
+                            <div class="mt-2 p-2 rounded-md ${statusColor}">
+                                <p class="text-xs font-bold">Feedback AI (${feedback.status}):</p>
+                                <p class="text-sm">${feedback.comment}</p>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+                <button onclick="generateStudentPDF('${attempt.id}')" class="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-200">
+                    Scarica PDF (Studente)
+                </button>
+                <button onclick="handleRouting('#/professor')" class="mt-4 bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg ml-2 shadow-md transition duration-200">
+                    Torna alla Vista Professore
+                </button>
+            `;
+            
+            appContainer.innerHTML = detailsHtml;
+        }
+
+        // --- Logica Vista Studente (Taking Quiz) ---
+
+        async function renderStudentView(quizId) {
+            toggleLoading(true, "Caricamento verifica...");
+            try {
+                const docSnap = await getDoc(doc(db, `${basePath}/quizzes`, quizId));
+
+                if (!docSnap.exists()) {
+                    appContainer.innerHTML = '<h2 class="text-red-600 text-2xl font-bold">Errore: Verifica non trovata.</h2><p>Controlla il link fornito.</p>';
+                    return;
+                }
+                
+                const quiz = docSnap.data().quizData;
+                currentQuiz = { id: quizId, data: quiz }; // Salva per l'invio
+                
+                let questionsHtml = quiz.questions.map(q => {
+                    let inputField;
+                    if (q.type === 'multiple_choice' || q.type === 'true_false') {
+                        inputField = q.options.map((opt, i) => `
+                            <div class="flex items-center">
+                                <input id="q${q.id}opt${i}" type="radio" name="q${q.id}" value="${opt}" class="w-4 h-4 text-indigo-600 border-gray-300 focus:ring-indigo-500">
+                                <label for="q${q.id}opt${i}" class="ml-3 block text-sm font-medium text-gray-700">${opt}</label>
+                            </div>
+                        `).join('');
+                        inputField = `<div class="mt-2 space-y-2">${inputField}</div>`;
+                    } else if (q.type === 'open_ended' || q.type === 'gap_fill') {
+                         inputField = `<textarea id="q${q.id}" rows="4" class="w-full p-2 mt-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500" placeholder="Scrivi qui la tua risposta..."></textarea>`;
+                    }
+                    
+                    const mediaHtml = q.mediaUrl ? 
+                        `<div class="my-3 p-2 border border-dashed border-gray-300 rounded-md">
+                            <p class="text-sm font-semibold">Risorsa:</p>
+                            <img src="${q.mediaUrl}" onerror="this.onerror=null;this.src='https://placehold.co/400x150/f9fafb/6b7280?text=Immagine+di+supporto';" class="mt-2 max-w-full h-auto rounded-md shadow" alt="Immagine di supporto">
+                        </div>` 
+                        : '';
+
+                    return `
+                        <div class="p-6 bg-white rounded-xl shadow-lg border border-gray-200">
+                            <label class="block text-lg font-semibold text-gray-800 mb-2">${q.id}. ${q.text}</label>
+                            ${mediaHtml}
+                            ${inputField}
+                        </div>
+                    `;
+                }).join('<div class="h-6"></div>');
+
+                appContainer.innerHTML = `
+                    <h2 class="text-3xl font-extrabold text-indigo-700 mb-6">${quiz.title}</h2>
+                    <p class="text-gray-600 mb-8">${quiz.description}</p>
+                    
+                    <div id="studentInfoForm" class="p-6 bg-yellow-50 rounded-lg shadow-inner mb-8">
+                        <h3 class="text-xl font-bold text-yellow-800 mb-3">I tuoi Dati</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                            <input type="text" id="studentName" placeholder="Nome" class="p-2 border border-yellow-300 rounded-lg focus:ring-yellow-500 col-span-2">
+                            <input type="text" id="studentClass" placeholder="Classe" class="p-2 border border-yellow-300 rounded-lg focus:ring-yellow-500">
+                            <input type="date" id="studentDate" class="p-2 border border-yellow-300 rounded-lg focus:ring-yellow-500">
+                        </div>
+                    </div>
+
+                    <form id="quizForm" class="space-y-6">
+                        ${questionsHtml}
+                        <button type="submit" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-xl transition duration-200">
+                            Invia Verifica e Correggi con AI
+                        </button>
+                    </form>
+                    
+                    <div id="quizResult" class="mt-8"></div>
+                `;
+
+                document.getElementById('quizForm').addEventListener('submit', (e) => handleQuizSubmit(e, quizId, quiz));
+
+            } catch (error) {
+                console.error("Errore nel caricamento della verifica:", error);
+                appContainer.innerHTML = '<h2 class="text-red-600 text-2xl font-bold">Errore di Caricamento.</h2><p>Impossibile connettersi al database.</p>';
+            } finally {
+                toggleLoading(false);
+            }
+        }
+
+        async function handleQuizSubmit(e, quizId, quizData) {
+            e.preventDefault();
+
+            const studentName = document.getElementById('studentName').value.trim();
+            const studentClass = document.getElementById('studentClass').value.trim();
+            const studentDate = document.getElementById('studentDate').value.trim();
+            
+            if (!studentName || !studentClass || !studentDate) {
+                alert("Per favore, compila tutti i campi (Nome, Classe, Data) prima di inviare.");
+                return;
+            }
+
+            const studentAnswers = {};
+            let isAnyAnswered = false;
+
+            quizData.questions.forEach(q => {
+                let answer = '';
+                if (q.type === 'multiple_choice' || q.type === 'true_false') {
+                    const selected = document.querySelector(`input[name="q${q.id}"]:checked`);
+                    answer = selected ? selected.value : '';
+                } else if (q.type === 'open_ended' || q.type === 'gap_fill') {
+                    answer = document.getElementById(`q${q.id}`).value.trim();
+                }
+                studentAnswers[`q${q.id}`] = answer;
+                if (answer) isAnyAnswered = true;
+            });
+            
+            if (!isAnyAnswered) {
+                alert("Non hai risposto a nessuna domanda. Per favore, prova a rispondere prima di inviare.");
+                return;
+            }
+
+            // Dati da inviare a Gemini per la correzione
+            const correctionPrompt = generateCorrectionPrompt(quizData, studentAnswers);
+            
+            const systemPrompt = `Sei un insegnante di alta precisione. Devi correggere la verifica dello studente confrontando le sue risposte con la chiave di correzione fornita.
+            Il tuo output DEVE essere in formato JSON e contenere:
+            1. Un 'score' finale in centesimi che verrà convertito in 0-10 (es. 7.5 per 75/100).
+            2. Una 'evaluation' generale (massimo 2 frasi) che attribuisce un voto descrittivo in base al voto (es. Ottimo se >=8, Sufficiente se >=6).
+            3. Un array 'questionFeedback' con un oggetto per ogni domanda. Ogni oggetto deve contenere: 'id', 'status' ('Corretto' o 'Non Corretto'), e 'comment' (feedback preciso e puntuale sulla risposta).`;
+
+            const payload = {
+                contents: [{ parts: [{ text: correctionPrompt }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "OBJECT",
+                        properties: {
+                            score: { type: "NUMBER", description: "Punteggio finale in scala 0-10, può avere decimali." },
+                            evaluation: { type: "STRING", description: "Valutazione generale (Ottimo, Buono, Sufficiente, Insufficiente) in base al voto." },
+                            questionFeedback: {
+                                type: "ARRAY",
+                                items: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        id: { type: "NUMBER" },
+                                        status: { type: "STRING" },
+                                        comment: { type: "STRING" }
+                                    },
+                                    required: ["id", "status", "comment"]
+                                }
+                            }
+                        },
+                        required: ["score", "evaluation", "questionFeedback"]
+                    }
+                }
+            };
+
+            const response = await geminiApiCall(payload, "Correzione della verifica e attribuzione del voto da parte dell'AI...");
+            
+            if (response && response.candidates && response.candidates.length > 0) {
+                const jsonText = response.candidates[0].content.parts[0].text;
+                try {
+                    const correctionData = JSON.parse(jsonText);
+                    
+                    // Salva il tentativo corretto su Firestore
+                    const attemptRef = await addDoc(collection(db, `${basePath}/attempts`), {
+                        quizId: quizId,
+                        studentName: studentName,
+                        studentClass: studentClass,
+                        studentDate: studentDate,
+                        submittedAt: new Date().toISOString(),
+                        studentAnswers: studentAnswers,
+                        correctionData: correctionData
+                    });
+
+                    currentAttempt = {
+                        id: attemptRef.id,
+                        quizId: quizId,
+                        studentName: studentName,
+                        studentClass: studentClass,
+                        studentDate: studentDate,
+                        studentAnswers: studentAnswers,
+                        correctionData: correctionData
+                    };
+
+                    renderResultView(quizData, currentAttempt);
+
+                } catch (e) {
+                    console.error("Errore nel parsing o nel salvataggio della correzione:", e);
+                    alert("Errore: Impossibile elaborare i dati di correzione generati dall'AI.");
+                }
+            } else {
+                 alert("Impossibile correggere la verifica. Riprova più tardi.");
+            }
+        }
+        
+        function generateCorrectionPrompt(quizData, studentAnswers) {
+            let prompt = `Correzione della verifica: ${quizData.title}\n\n`;
+            prompt += `Dati Studente: Rispondi con precisione e assegna un voto in base alla correttezza delle risposte aperte/chiuse.\n\n`;
+
+            quizData.questions.forEach((q, index) => {
+                const studentAnswer = studentAnswers[`q${q.id}`] || 'Nessuna risposta fornita';
+                prompt += `--- Domanda ${q.id} (${q.type}) ---\n`;
+                prompt += `Testo: ${q.text}\n`;
+                prompt += `Risposta Corretta (Chiave): ${q.correctAnswer}\n`;
+                prompt += `Risposta dello Studente: ${studentAnswer}\n\n`;
+            });
+
+            return prompt;
+        }
+
+        function renderResultView(quizData, attempt) {
+            const resultDiv = document.getElementById('quizResult');
+            const score = attempt.correctionData.score;
+            const evaluation = attempt.correctionData.evaluation;
+            const feedback = attempt.correctionData.questionFeedback;
+
+            let scoreColorClass = 'text-gray-700';
+            if (score >= 8) scoreColorClass = 'text-green-600';
+            else if (score >= 6) scoreColorClass = 'text-yellow-600';
+            else scoreColorClass = 'text-red-600';
+
+            let resultsHtml = `
+                <div class="p-8 bg-indigo-50 rounded-xl shadow-2xl text-center mb-8">
+                    <h3 class="text-4xl font-extrabold text-indigo-700 mb-2">Verifica Inviata e Corretta!</h3>
+                    <p class="text-xl font-semibold text-gray-700">Studente: ${attempt.studentName} (${attempt.studentClass})</p>
+                    <div class="mt-6 p-4 inline-block bg-white rounded-xl shadow-lg border-2 border-indigo-400">
+                        <p class="text-5xl font-black ${scoreColorClass}">${score} / 10</p>
+                    </div>
+                    <p class="mt-4 text-xl font-medium ${scoreColorClass}">${evaluation}</p>
+                    <p class="text-sm text-gray-500 mt-2">Correzione e valutazione eseguita dall'Intelligenza Artificiale.</p>
+                </div>
+                
+                <h4 class="text-2xl font-bold text-gray-800 mb-4">Dettaglio Correzione Domanda per Domanda:</h4>
+                <div class="space-y-4">
+            `;
+            
+            quizData.questions.forEach((q, index) => {
+                const studentAnswer = attempt.studentAnswers[`q${q.id}`] || 'Nessuna risposta';
+                const f = feedback.find(item => item.id === q.id) || { status: 'Errore Feedback', comment: 'Feedback non trovato.' };
+                
+                const statusBg = f.status.toLowerCase().includes('corretto') ? 'bg-green-50' : (f.status.toLowerCase().includes('non corretto') ? 'bg-red-50' : 'bg-gray-50');
+                const statusText = f.status.toLowerCase().includes('corretto') ? 'text-green-700' : (f.status.toLowerCase().includes('non corretto') ? 'text-red-700' : 'text-gray-700');
+                
+                resultsHtml += `
+                    <div class="p-4 rounded-lg border border-gray-200 ${statusBg} shadow-sm">
+                        <p class="font-bold text-gray-800">${q.id}. ${q.text}</p>
+                        <p class="mt-1 text-sm text-gray-600">La tua Risposta: <span class="font-medium italic">${studentAnswer}</span></p>
+                        <p class="text-sm text-green-600">Risposta Attesa: <span class="font-medium">${q.correctAnswer}</span></p>
+                        <div class="mt-3 p-2 border-t border-gray-300">
+                            <p class="text-xs font-bold ${statusText}">STATO: ${f.status}</p>
+                            <p class="text-sm italic text-gray-700">Commento AI: ${f.comment}</p>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            resultsHtml += `
+                </div>
+                <button onclick="generateStudentPDF('${attempt.id}')" class="mt-8 w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg shadow-xl transition duration-200">
+                    Scarica la Tua Verifica Corretta (PDF Studente)
+                </button>
+            `;
+            
+            appContainer.innerHTML = resultsHtml;
+        }
+
+        // --- Logica per la Generazione di PDF (jsPDF) ---
+        
+        window.copyToClipboard = (text) => {
+            const el = document.createElement('textarea');
+            el.value = text;
+            document.body.appendChild(el);
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+            alert('Link copiato negli appunti!');
+        };
+        
+        // Funzione per generare PDF Studente (Verifica + Correzione)
+        async function generateStudentPDF(attemptId) {
+            toggleLoading(true, "Generazione PDF Studente...");
+            
+            try {
+                const attemptDoc = await getDoc(doc(db, `${basePath}/attempts`, attemptId));
+                if (!attemptDoc.exists()) throw new Error("Tentativo non trovato.");
+                const attempt = attemptDoc.data();
+
+                const quizDoc = await getDoc(doc(db, `${basePath}/quizzes`, attempt.quizId));
+                if (!quizDoc.exists()) throw new Error("Verifica associata non trovata.");
+                const quizData = quizDoc.data().quizData;
+                
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF();
+
+                doc.setFontSize(16);
+                doc.setFont("helvetica", "bold");
+                doc.text(`Verifica Corretta: ${quizData.title}`, 105, 15, null, null, "center");
+
+                doc.setFontSize(10);
+                doc.setFont("helvetica", "normal");
+                doc.text(`Studente: ${attempt.studentName}`, 14, 25);
+                doc.text(`Classe: ${attempt.studentClass}`, 14, 30);
+                doc.text(`Data: ${attempt.studentDate}`, 14, 35);
+                
+                const score = attempt.correctionData.score;
+                const evaluation = attempt.correctionData.evaluation;
+                const scoreText = `Voto Finale: ${score} / 10 | Valutazione: ${evaluation}`;
+                doc.setFont("helvetica", "bold");
+                doc.setTextColor(34, 139, 34); // Verde scuro
+                doc.text(scoreText, 105, 45, null, null, "center");
+                doc.setTextColor(0, 0, 0); // Nero
+
+                let y = 55;
+
+                quizData.questions.forEach((q, index) => {
+                    const studentAnswer = attempt.studentAnswers[`q${q.id}`] || 'Nessuna risposta';
+                    const feedback = attempt.correctionData.questionFeedback.find(f => f.id === q.id) || { status: 'N/D', comment: 'N/D' };
+                    
+                    if (y > 270) { doc.addPage(); y = 15; }
+
+                    doc.setFontSize(10);
+                    doc.setFont("helvetica", "bold");
+                    doc.text(`Domanda ${q.id}:`, 14, y);
+                    y += 5;
+                    
+                    doc.setFont("helvetica", "normal");
+                    let textLines = doc.splitTextToSize(q.text, 180);
+                    doc.text(textLines, 14, y);
+                    y += (textLines.length * 5) + 3;
+                    
+                    doc.setFontSize(9);
+                    doc.text(`Tua Risposta: ${studentAnswer}`, 14, y);
+                    y += 5;
+                    doc.text(`Risposta Attesa: ${q.correctAnswer}`, 14, y);
+                    y += 5;
+                    
+                    doc.setFont("helvetica", "italic");
+                    doc.setTextColor(128, 128, 128); // Grigio
+                    doc.text(`Commento AI (${feedback.status}): ${feedback.comment}`, 14, y);
+                    doc.setTextColor(0, 0, 0);
+                    y += 8;
+                });
+                
+                doc.save(`Verifica_${attempt.studentName}_Corretta.pdf`);
+
+            } catch (error) {
+                console.error("Errore durante la generazione del PDF Studente:", error);
+                alert("Si è verificato un errore durante la generazione del PDF. Controlla la console.");
+            } finally {
+                toggleLoading(false);
+            }
+        }
+        
+        // Funzione per generare PDF Professore (Report Completo)
+        async function generateProfessorPDF(quizId, quizData) {
+            toggleLoading(true, "Generazione Report Professore...");
+            
+            try {
+                const attemptsSnapshot = await getDocs(query(collection(db, `${basePath}/attempts`), where("quizId", "==", quizId)));
+                const attempts = attemptsSnapshot.docs.map(doc => doc.data());
+
+                if (attempts.length === 0) {
+                    alert("Nessun tentativo da inserire nel report.");
+                    return;
+                }
+
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF('l'); // Orientamento Landscape
+
+                doc.setFontSize(18);
+                doc.setFont("helvetica", "bold");
+                doc.text(`Report Verifiche: ${quizData.title}`, 140, 15, null, null, "center");
+                
+                doc.setFontSize(10);
+                doc.doc.setFont("helvetica", "normal");
+                doc.text(`Numero Tentativi: ${attempts.length}`, 14, 25);
+                doc.text(`Chiave Correzione:`, 14, 30);
+                
+                let y = 35;
+                quizData.questions.forEach(q => {
+                    doc.text(`D${q.id} (${q.type}): ${q.correctAnswer}`, 14, y);
+                    y += 4;
+                });
+                
+                const tableColumn = ["Nome", "Classe", "Data", "Voto (0-10)", "Valutazione AI"];
+                const tableRows = attempts.map(a => {
+                    const score = a.correctionData?.score !== undefined ? a.correctionData.score : 'N/D';
+                    const evaluation = a.correctionData?.evaluation || 'In attesa';
+                    return [
+                        a.studentName, 
+                        a.studentClass, 
+                        a.studentDate, 
+                        score, 
+                        evaluation
+                    ];
+                });
+
+                doc.autoTable(tableColumn, tableRows, { 
+                    startY: y + 5,
+                    headStyles: { fillColor: [49, 46, 129], fontStyle: 'bold' },
+                    margin: { top: y + 5, left: 14, right: 14 }
+                });
+
+                doc.save(`Report_Professore_${quizData.title}.pdf`);
+
+            } catch (error) {
+                console.error("Errore durante la generazione del PDF Professore:", error);
+                alert("Si è verificato un errore durante la generazione del PDF. Controlla la console.");
+            } finally {
+                toggleLoading(false);
+            }
+        }
+
+        // --- Routing dell'Applicazione ---
+        function getQueryParams() {
+            const params = new URLSearchParams(window.location.search);
+            return {
+                quizId: params.get('quizId')
+            };
+        }
+
+        function handleRouting() {
+            if (!isAuthReady) return; // Non avviare prima dell'autenticazione
+
+            const params = getQueryParams();
+            const hash = window.location.hash;
+
+            if (params.quizId) {
+                // Vista Studente (Verifica)
+                renderStudentView(params.quizId);
+            } else if (hash.startsWith('#/professor')) {
+                // Vista Professore (Creazione)
+                renderProfessorView();
+            } else if (hash.startsWith('#/attempt/')) {
+                 // Vista Dettagli Tentativo (usato internamente, reindirizza al professore)
+                 const parts = hash.split('/');
+                 if (parts.length === 3) {
+                     handleViewAttempt(parts[2], currentQuiz?.quizId || null);
+                 } else {
+                     handleRouting('#/professor');
+                 }
+            } else {
+                // Default: Vista Professore
+                window.location.hash = '#/professor';
+                renderProfessorView();
+            }
+        }
+        
+        window.handleRouting = handleRouting; // Esporre per l'uso da HTML
+        window.handleViewAttempt = (attemptId, quizId) => {
+            // Reindirizza alla vista dettagli tentativo (per semplicità in questa singola pagina)
+            handleViewAttempt(attemptId, quizId); 
+        }
+        window.generateStudentPDF = generateStudentPDF;
+
+        // Inizializza l'app all'avvio
+        initFirebase();
+        
+        // Listener per i cambiamenti di hash
+        window.addEventListener('hashchange', handleRouting);
+    </script>
+</body>
+</html>
